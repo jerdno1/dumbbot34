@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord import app_commands
 import aiohttp
 import random
 import os
@@ -8,10 +8,11 @@ import json
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix=".m ", intents=intents, help_command=None)
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BOORU_API_BASE = "https://api.rule34.xxx/index.php"
+BOORU_API_BASE = "https://api.24booru.xyz/index.php"
 BOORU_USER_ID = os.environ.get("BOORU_USER_ID", "")
 BOORU_API_KEY = os.environ.get("BOORU_API_KEY", "")
 FAVOURITES_FILE = "favourites.json"
@@ -47,6 +48,7 @@ def add_favourite(guild_id: int, post: dict) -> bool:
         "tags": post.get("tags", ""),
         "score": post.get("score", 0),
         "rating": post.get("rating", "?"),
+        "created_at": post.get("created_at", ""),
     })
     save_favourites(data)
     return True
@@ -64,56 +66,26 @@ def remove_favourite(guild_id: int, post_id) -> bool:
     save_favourites(data)
     return True
 
-
+def apply_sort(posts: list, sort: str) -> list:
+    if sort == "score_desc":
+        return sorted(posts, key=lambda p: int(p.get("score", 0) or 0), reverse=True)
+    elif sort == "score_asc":
+        return sorted(posts, key=lambda p: int(p.get("score", 0) or 0))
+    elif sort == "date_desc":
+        return sorted(posts, key=lambda p: str(p.get("created_at", "")), reverse=True)
+    elif sort == "date_asc":
+        return sorted(posts, key=lambda p: str(p.get("created_at", "")))
+    else:  # random (default)
+        posts = list(posts)
+        random.shuffle(posts)
+        return posts
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
+    await tree.sync()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-
-# ── .m help ───────────────────────────────────────────────────────────────────
-
-@bot.command(name="help")
-async def help_cmd(ctx):
-    embed = discord.Embed(title="Commands", color=0x2B2D31)
-    embed.add_field(name=".m meme", value="Random meme from Reddit", inline=False)
-    embed.add_field(name=".m randommeme [tags]", value="Random post from 24booru, optional tags", inline=False)
-    embed.add_field(name=".m favorites", value="Browse this server's favourited booru posts", inline=False)
-    embed.add_field(name=".m ping", value="Check bot latency", inline=False)
-    await ctx.send(embed=embed)
-
-# ── .m meme ───────────────────────────────────────────────────────────────────
-
-@bot.command(name="meme")
-async def meme(ctx):
-    subreddits = ["memes", "dankmemes", "me_irl", "shitposting", "196"]
-    sub = random.choice(subreddits)
-    url = f"https://www.reddit.com/r/{sub}/random/.json"
-
-    async with aiohttp.ClientSession() as session:
-        headers = {"User-Agent": "discord-bot/1.0"}
-        try:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    await ctx.send("Couldn't fetch a meme right now, try again! (´• ω •`)")
-                    return
-                data = await resp.json()
-                post = data[0]["data"]["children"][0]["data"]
-                title = post["title"]
-                image = post.get("url_overridden_by_dest", "")
-                post_url = f"https://reddit.com{post['permalink']}"
-
-                if not image.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-                    await ctx.send("Couldn't find an image meme, try again!")
-                    return
-
-                embed = discord.Embed(title=title, url=post_url, color=0xFF4500)
-                embed.set_image(url=image)
-                embed.set_footer(text=f"r/{sub}")
-                await ctx.send(embed=embed)
-        except Exception as e:
-            await ctx.send(f"Something went wrong: {e}")
 
 # ── Booru browser view ────────────────────────────────────────────────────────
 
@@ -138,7 +110,6 @@ class BooruView(discord.ui.View):
         self.next_btn.disabled = self.index >= len(self.posts) - 1
         self.last_btn.disabled = self.index >= len(self.posts) - 1
 
-        # Update star button label based on current favourite state
         if self._is_favourited():
             self.fav_btn.emoji = "💛"
             self.fav_btn.style = discord.ButtonStyle.success
@@ -146,7 +117,6 @@ class BooruView(discord.ui.View):
             self.fav_btn.emoji = "⭐"
             self.fav_btn.style = discord.ButtonStyle.secondary
 
-        # Unfav button only shown in favourites view
         self.unfav_btn.disabled = not self.is_favourites
 
     def build_embed(self) -> discord.Embed:
@@ -219,7 +189,6 @@ class BooruView(discord.ui.View):
         post = self.posts[self.index]
         removed = remove_favourite(self.guild_id, post.get("id"))
         if removed:
-            # Remove from local list and adjust index
             self.posts.pop(self.index)
             if not self.posts:
                 await interaction.edit_original_response(
@@ -237,10 +206,71 @@ class BooruView(discord.ui.View):
         for item in self.children:
             item.disabled = True
 
-# ── .m randommeme [tags] ──────────────────────────────────────────────────────
+# ── /help ─────────────────────────────────────────────────────────────────────
 
-@bot.command(name="randommeme")
-async def randommeme(ctx, *, tags: str = ""):
+@tree.command(name="help", description="List all commands")
+async def help_cmd(interaction: discord.Interaction):
+    embed = discord.Embed(title="Commands", color=0x2B2D31)
+    embed.add_field(name="/meme", value="Random meme from Reddit", inline=False)
+    embed.add_field(name="/booru [tags] [sort]", value="Browse 24booru posts, optional tags and sort order", inline=False)
+    embed.add_field(name="/favorites [sort]", value="Browse this server's favourited booru posts", inline=False)
+    embed.add_field(name="/ping", value="Check bot latency", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# ── /meme ─────────────────────────────────────────────────────────────────────
+
+@tree.command(name="meme", description="Random meme from Reddit")
+async def meme(interaction: discord.Interaction):
+    await interaction.response.defer()
+    subreddits = ["memes", "dankmemes", "me_irl", "shitposting", "196"]
+    sub = random.choice(subreddits)
+    url = f"https://www.reddit.com/r/{sub}/random/.json"
+
+    async with aiohttp.ClientSession() as session:
+        headers = {"User-Agent": "discord-bot/1.0"}
+        try:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send("Couldn't fetch a meme right now, try again! (´• ω •`)")
+                    return
+                data = await resp.json()
+                post = data[0]["data"]["children"][0]["data"]
+                title = post["title"]
+                image = post.get("url_overridden_by_dest", "")
+                post_url = f"https://reddit.com{post['permalink']}"
+
+                if not image.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                    await interaction.followup.send("Couldn't find an image meme, try again!")
+                    return
+
+                embed = discord.Embed(title=title, url=post_url, color=0xFF4500)
+                embed.set_image(url=image)
+                embed.set_footer(text=f"r/{sub}")
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"Something went wrong: {e}")
+
+# ── /booru ────────────────────────────────────────────────────────────────────
+
+@tree.command(name="booru", description="Browse 24booru posts")
+@app_commands.describe(
+    tags="Optional tags to filter posts",
+    sort="Sort order (default: random)"
+)
+@app_commands.choices(sort=[
+    app_commands.Choice(name="Random (default)", value="random"),
+    app_commands.Choice(name="Score: High to Low", value="score_desc"),
+    app_commands.Choice(name="Score: Low to High", value="score_asc"),
+    app_commands.Choice(name="Date: Newest First", value="date_desc"),
+    app_commands.Choice(name="Date: Oldest First", value="date_asc"),
+])
+async def booru(
+    interaction: discord.Interaction,
+    tags: str = "",
+    sort: str = "random"
+):
+    await interaction.response.defer()
+
     tag_query = (tags.strip() + " -ai").strip() if tags.strip() else "-ai"
 
     params = {
@@ -260,50 +290,62 @@ async def randommeme(ctx, *, tags: str = ""):
         try:
             async with session.get(BOORU_API_BASE, params=params) as resp:
                 if resp.status != 200:
-                    await ctx.send("Couldn't reach the 24booru API right now. (´• ω •`)")
+                    await interaction.followup.send("Couldn't reach the 24booru API right now. (´• ω •`)")
                     return
                 data = await resp.json(content_type=None)
 
                 if isinstance(data, dict) and not data.get("success", True):
-                    await ctx.send("The booru search is down right now, try again later!")
+                    await interaction.followup.send("The booru search is down right now, try again later!")
                     return
                 if not data:
-                    await ctx.send("No results found for those tags!")
+                    await interaction.followup.send("No results found for those tags!")
                     return
 
                 posts = [p for p in data if p.get("file_url") or p.get("sample_url")]
                 if not posts:
-                    await ctx.send("Got results but none had images, try again!")
+                    await interaction.followup.send("Got results but none had images, try again!")
                     return
 
-                view = BooruView(posts, guild_id=ctx.guild.id)
-                await ctx.send(embed=view.build_embed(), view=view)
+                posts = apply_sort(posts, sort)
+                view = BooruView(posts, guild_id=interaction.guild_id)
+                await interaction.followup.send(embed=view.build_embed(), view=view)
 
         except Exception as e:
-            await ctx.send(f"Something went wrong: {e}")
+            await interaction.followup.send(f"Something went wrong: {e}")
 
-# ── .m favorites ──────────────────────────────────────────────────────────────
+# ── /favorites ────────────────────────────────────────────────────────────────
 
-@bot.command(name="favorites")
-async def favorites(ctx):
-    if not ctx.guild:
-        await ctx.send("This command only works in a server!")
+@tree.command(name="favorites", description="Browse this server's favourited booru posts")
+@app_commands.describe(sort="Sort order (default: random)")
+@app_commands.choices(sort=[
+    app_commands.Choice(name="Random (default)", value="random"),
+    app_commands.Choice(name="Score: High to Low", value="score_desc"),
+    app_commands.Choice(name="Score: Low to High", value="score_asc"),
+    app_commands.Choice(name="Date: Newest First", value="date_desc"),
+    app_commands.Choice(name="Date: Oldest First", value="date_asc"),
+])
+async def favorites(interaction: discord.Interaction, sort: str = "random"):
+    if not interaction.guild:
+        await interaction.response.send_message("This command only works in a server!", ephemeral=True)
         return
 
-    posts = get_guild_favourites(ctx.guild.id)
+    posts = get_guild_favourites(interaction.guild_id)
     if not posts:
-        await ctx.send("This server has no favourited posts yet! Use ⭐ in the booru browser to add some.")
+        await interaction.response.send_message(
+            "This server has no favourited posts yet! Use ⭐ in the booru browser to add some."
+        )
         return
 
-    view = BooruView(posts, guild_id=ctx.guild.id, is_favourites=True)
-    await ctx.send(embed=view.build_embed(), view=view)
+    posts = apply_sort(posts, sort)
+    view = BooruView(posts, guild_id=interaction.guild_id, is_favourites=True)
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
 
+# ── /ping ─────────────────────────────────────────────────────────────────────
 
-
-@bot.command(name="ping")
-async def ping(ctx):
+@tree.command(name="ping", description="Check bot latency")
+async def ping(interaction: discord.Interaction):
     latency = round(bot.latency * 1000)
-    await ctx.send(f"🏓 Pong! Latency: **{latency}ms**")
+    await interaction.response.send_message(f"🏓 Pong! Latency: **{latency}ms**")
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
