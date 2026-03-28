@@ -11,7 +11,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix=".m ", intents=intents, help_command=None)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BOORU_API_BASE = "https://api.rule34.xxx/index.php"
+BOORU_API_BASE = "https://api.24booru.xyz/index.php"
 BOORU_USER_ID = os.environ.get("BOORU_USER_ID", "")
 BOORU_API_KEY = os.environ.get("BOORU_API_KEY", "")
 
@@ -142,15 +142,23 @@ class BooruView(discord.ui.View):
 
     @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         self.index -= 1
         self._update_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        try:
+            await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        except Exception as e:
+            await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
     @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         self.index += 1
         self._update_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        try:
+            await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        except Exception as e:
+            await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
     async def on_timeout(self):
         for item in self.children:
