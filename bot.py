@@ -12,7 +12,7 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BOORU_API_BASE = "https://api.24booru.xyz/index.php"
+BOORU_API_BASE = "https://api.rule34.xxx/index.php"
 BOORU_USER_ID = os.environ.get("BOORU_USER_ID", "")
 BOORU_API_KEY = os.environ.get("BOORU_API_KEY", "")
 FAVOURITES_FILE = "favourites.json"
