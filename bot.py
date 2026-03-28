@@ -2,8 +2,8 @@ import discord
 from discord.ext import commands
 import aiohttp
 import random
-import asyncio
 import os
+import json
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -11,53 +11,60 @@ intents.message_content = True
 bot = commands.Bot(command_prefix=".m ", intents=intents, help_command=None)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BOORU_API_BASE = "https://api.rule34.xxx/index.php"
+BOORU_API_BASE = "https://api.24booru.xyz/index.php"
 BOORU_USER_ID = os.environ.get("BOORU_USER_ID", "")
 BOORU_API_KEY = os.environ.get("BOORU_API_KEY", "")
+FAVOURITES_FILE = "favourites.json"
 
-# ── Trivia ────────────────────────────────────────────────────────────────────
-TRIVIA = [
-    {"q": "What is the capital of Slovakia?", "a": "bratislava"},
-    {"q": "How many sides does a hexagon have?", "a": "6"},
-    {"q": "What element has the symbol Fe?", "a": "iron"},
-    {"q": "Who invented the telephone?", "a": "alexander graham bell"},
-    {"q": "What is 12 × 12?", "a": "144"},
-    {"q": "Which planet is closest to the Sun?", "a": "mercury"},
-    {"q": "What gas do plants absorb from the air?", "a": "carbon dioxide"},
-    {"q": "How many continents are there?", "a": "7"},
-    {"q": "What is the fastest land animal?", "a": "cheetah"},
-    {"q": "Who painted the Mona Lisa?", "a": "leonardo da vinci"},
-    {"q": "What year did World War II end?", "a": "1945"},
-    {"q": "What is the chemical symbol for gold?", "a": "au"},
-    {"q": "How many strings does a standard guitar have?", "a": "6"},
-    {"q": "What is the square root of 64?", "a": "8"},
-    {"q": "Which country has the largest population?", "a": "india"},
-]
+# ── Favourites storage ────────────────────────────────────────────────────────
 
-active_trivia: dict[int, dict] = {}
+def load_favourites() -> dict:
+    if not os.path.exists(FAVOURITES_FILE):
+        return {}
+    with open(FAVOURITES_FILE, "r") as f:
+        return json.load(f)
 
-EIGHTBALL = [
-    "It is certain.", "It is decidedly so.", "Without a doubt.",
-    "Yes, definitely.", "You may rely on it.", "As I see it, yes.",
-    "Most likely.", "Outlook good.", "Yes.", "Signs point to yes.",
-    "Reply hazy, try again.", "Ask again later.", "Better not tell you now.",
-    "Cannot predict now.", "Concentrate and ask again.",
-    "Don't count on it.", "My reply is no.", "My sources say no.",
-    "Outlook not so good.", "Very doubtful.",
-]
+def save_favourites(data: dict):
+    with open(FAVOURITES_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-FORTUNES = [
-    "A surprise is waiting for you around the corner.",
-    "Hard work pays off -- eventually.",
-    "Someone is thinking about you right now.",
-    "Your next big idea will come from the most unexpected place.",
-    "The stars say: touch grass.",
-    "You will find something you lost long ago.",
-    "Be patient. Good things take time.",
-    "A new friendship will change your life.",
-    "Do not be afraid to take the first step.",
-    "The cookie says nothing. The cookie is wise.",
-]
+def get_guild_favourites(guild_id: int) -> list:
+    data = load_favourites()
+    return data.get(str(guild_id), [])
+
+def add_favourite(guild_id: int, post: dict) -> bool:
+    """Returns False if already favourited, True if added."""
+    data = load_favourites()
+    key = str(guild_id)
+    if key not in data:
+        data[key] = []
+    post_id = str(post.get("id", ""))
+    if any(str(f.get("id", "")) == post_id for f in data[key]):
+        return False
+    data[key].append({
+        "id": post.get("id"),
+        "file_url": post.get("file_url") or post.get("sample_url", ""),
+        "tags": post.get("tags", ""),
+        "score": post.get("score", 0),
+        "rating": post.get("rating", "?"),
+    })
+    save_favourites(data)
+    return True
+
+def remove_favourite(guild_id: int, post_id) -> bool:
+    """Returns True if removed, False if not found."""
+    data = load_favourites()
+    key = str(guild_id)
+    if key not in data:
+        return False
+    before = len(data[key])
+    data[key] = [f for f in data[key] if str(f.get("id", "")) != str(post_id)]
+    if len(data[key]) == before:
+        return False
+    save_favourites(data)
+    return True
+
+
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
@@ -72,11 +79,7 @@ async def help_cmd(ctx):
     embed = discord.Embed(title="Commands", color=0x2B2D31)
     embed.add_field(name=".m meme", value="Random meme from Reddit", inline=False)
     embed.add_field(name=".m randommeme [tags]", value="Random post from 24booru, optional tags", inline=False)
-    embed.add_field(name=".m 8ball <question>", value="Ask the magic 8-ball", inline=False)
-    embed.add_field(name=".m fortune", value="Get your fortune", inline=False)
-    embed.add_field(name=".m trivia", value="Start a trivia question", inline=False)
-    embed.add_field(name=".m coinflip", value="Flip a coin", inline=False)
-    embed.add_field(name=".m roll [sides]", value="Roll a dice (d4/d6/d8/d10/d12/d20/d100)", inline=False)
+    embed.add_field(name=".m favorites", value="Browse this server's favourited booru posts", inline=False)
     embed.add_field(name=".m ping", value="Check bot latency", inline=False)
     await ctx.send(embed=embed)
 
@@ -115,20 +118,43 @@ async def meme(ctx):
 # ── Booru browser view ────────────────────────────────────────────────────────
 
 class BooruView(discord.ui.View):
-    def __init__(self, posts: list, index: int = 0):
+    def __init__(self, posts: list, guild_id: int, index: int = 0, is_favourites: bool = False):
         super().__init__(timeout=120)
         self.posts = posts
+        self.guild_id = guild_id
         self.index = index
+        self.is_favourites = is_favourites
         self._update_buttons()
 
+    def _is_favourited(self) -> bool:
+        post = self.posts[self.index]
+        post_id = str(post.get("id", ""))
+        favs = get_guild_favourites(self.guild_id)
+        return any(str(f.get("id", "")) == post_id for f in favs)
+
     def _update_buttons(self):
+        self.first_btn.disabled = self.index == 0
         self.prev_btn.disabled = self.index == 0
         self.next_btn.disabled = self.index >= len(self.posts) - 1
+        self.last_btn.disabled = self.index >= len(self.posts) - 1
+
+        # Update star button label based on current favourite state
+        if self._is_favourited():
+            self.fav_btn.emoji = "💛"
+            self.fav_btn.style = discord.ButtonStyle.success
+        else:
+            self.fav_btn.emoji = "⭐"
+            self.fav_btn.style = discord.ButtonStyle.secondary
+
+        # Unfav button only shown in favourites view
+        self.unfav_btn.disabled = not self.is_favourites
 
     def build_embed(self) -> discord.Embed:
         post = self.posts[self.index]
         image_url = post.get("file_url") or post.get("sample_url", "")
         tag_str = post.get("tags", "").strip()
+        score = post.get("score", "?")
+        rating = post.get("rating", "?")
         total = len(self.posts)
 
         embed = discord.Embed(color=0x43B581)
@@ -137,28 +163,75 @@ class BooruView(discord.ui.View):
         if tag_str:
             truncated = tag_str[:300] + ("..." if len(tag_str) > 300 else "")
             embed.description = f"-# {truncated}"
-        embed.set_footer(text=f"{self.index + 1} / {total}")
+        footer_parts = [f"{self.index + 1} / {total}", f"Score: {score}", f"Rating: {rating}"]
+        embed.set_footer(text="  |  ".join(footer_parts))
         return embed
 
-    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def _refresh(self, interaction: discord.Interaction):
+        self._update_buttons()
+        try:
+            await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        except Exception as e:
+            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
+    @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary, row=0)
+    async def first_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.index = 0
+        await self._refresh(interaction)
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, row=0)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.index -= 1
-        self._update_buttons()
-        try:
-            await interaction.edit_original_response(embed=self.build_embed(), view=self)
-        except Exception as e:
-            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+        await self._refresh(interaction)
 
-    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(emoji="⭐", style=discord.ButtonStyle.secondary, row=0)
+    async def fav_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        post = self.posts[self.index]
+        if self._is_favourited():
+            remove_favourite(self.guild_id, post.get("id"))
+            await interaction.followup.send("Removed from server favourites.", ephemeral=True)
+        else:
+            added = add_favourite(self.guild_id, post)
+            if added:
+                await interaction.followup.send("Added to server favourites! (ﾉ◕ヮ◕)ﾉ", ephemeral=True)
+            else:
+                await interaction.followup.send("Already in server favourites.", ephemeral=True)
+        await self._refresh(interaction)
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, row=0)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.index += 1
-        self._update_buttons()
-        try:
-            await interaction.edit_original_response(embed=self.build_embed(), view=self)
-        except Exception as e:
-            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+        await self._refresh(interaction)
+
+    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, row=0)
+    async def last_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.index = len(self.posts) - 1
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="Remove from Favourites", style=discord.ButtonStyle.danger, row=1)
+    async def unfav_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        post = self.posts[self.index]
+        removed = remove_favourite(self.guild_id, post.get("id"))
+        if removed:
+            # Remove from local list and adjust index
+            self.posts.pop(self.index)
+            if not self.posts:
+                await interaction.edit_original_response(
+                    content="No more favourites! (´• ω •`)", embed=None, view=None
+                )
+                self.stop()
+                return
+            self.index = min(self.index, len(self.posts) - 1)
+            await interaction.followup.send("Removed from server favourites.", ephemeral=True)
+        else:
+            await interaction.followup.send("Couldn't find that post in favourites.", ephemeral=True)
+        await self._refresh(interaction)
 
     async def on_timeout(self):
         for item in self.children:
@@ -168,7 +241,6 @@ class BooruView(discord.ui.View):
 
 @bot.command(name="randommeme")
 async def randommeme(ctx, *, tags: str = ""):
-    # Always append -ai to filter out AI-generated content
     tag_query = (tags.strip() + " -ai").strip() if tags.strip() else "-ai"
 
     params = {
@@ -204,86 +276,29 @@ async def randommeme(ctx, *, tags: str = ""):
                     await ctx.send("Got results but none had images, try again!")
                     return
 
-                view = BooruView(posts, index=0)
+                view = BooruView(posts, guild_id=ctx.guild.id)
                 await ctx.send(embed=view.build_embed(), view=view)
 
         except Exception as e:
             await ctx.send(f"Something went wrong: {e}")
 
-# ── .m 8ball <question> ───────────────────────────────────────────────────────
+# ── .m favorites ──────────────────────────────────────────────────────────────
 
-@bot.command(name="8ball")
-async def eightball(ctx, *, question: str = ""):
-    if not question:
-        await ctx.send("Ask a question! e.g. `.m 8ball will I pass my exam`")
-        return
-    answer = random.choice(EIGHTBALL)
-    embed = discord.Embed(color=0x2B2D31)
-    embed.add_field(name="Question", value=question, inline=False)
-    embed.add_field(name="🎱 Answer", value=answer, inline=False)
-    await ctx.send(embed=embed)
-
-# ── .m fortune ────────────────────────────────────────────────────────────────
-
-@bot.command(name="fortune")
-async def fortune(ctx):
-    msg = random.choice(FORTUNES)
-    embed = discord.Embed(title="🔮 Your Fortune", description=msg, color=0x9B59B6)
-    embed.set_footer(text="Accuracy not guaranteed (ﾉ◕ヮ◕)ﾉ")
-    await ctx.send(embed=embed)
-
-# ── .m trivia ─────────────────────────────────────────────────────────────────
-
-@bot.command(name="trivia")
-async def trivia(ctx):
-    channel_id = ctx.channel.id
-
-    if channel_id in active_trivia:
-        await ctx.send("A trivia question is already active in this channel!")
+@bot.command(name="favorites")
+async def favorites(ctx):
+    if not ctx.guild:
+        await ctx.send("This command only works in a server!")
         return
 
-    question = random.choice(TRIVIA)
-    active_trivia[channel_id] = question
-
-    embed = discord.Embed(title="🧠 Trivia Time!", description=question["q"], color=0xF1C40F)
-    embed.set_footer(text="Type your answer in chat! You have 30 seconds.")
-    await ctx.send(embed=embed)
-
-    def check(msg: discord.Message):
-        return (
-            msg.channel.id == channel_id
-            and not msg.author.bot
-            and msg.content.strip().lower() == question["a"].lower()
-        )
-
-    try:
-        msg = await bot.wait_for("message", check=check, timeout=30.0)
-        del active_trivia[channel_id]
-        await ctx.send(f"✅ Correct, {msg.author.mention}! The answer was **{question['a']}**.")
-    except asyncio.TimeoutError:
-        if channel_id in active_trivia:
-            del active_trivia[channel_id]
-        await ctx.send(f"⏰ Time's up! The answer was **{question['a']}**.")
-
-# ── .m coinflip ───────────────────────────────────────────────────────────────
-
-@bot.command(name="coinflip")
-async def coinflip(ctx):
-    result = random.choice(["Heads", "Tails"])
-    await ctx.send(f"🪙 **{result}!**")
-
-# ── .m roll [sides] ───────────────────────────────────────────────────────────
-
-@bot.command(name="roll")
-async def roll(ctx, sides: int = 6):
-    valid = [4, 6, 8, 10, 12, 20, 100]
-    if sides not in valid:
-        await ctx.send(f"Pick a valid dice: {', '.join(f'd{v}' for v in valid)}")
+    posts = get_guild_favourites(ctx.guild.id)
+    if not posts:
+        await ctx.send("This server has no favourited posts yet! Use ⭐ in the booru browser to add some.")
         return
-    result = random.randint(1, sides)
-    await ctx.send(f"🎲 You rolled a **d{sides}** and got **{result}**!")
 
-# ── .m ping ───────────────────────────────────────────────────────────────────
+    view = BooruView(posts, guild_id=ctx.guild.id, is_favourites=True)
+    await ctx.send(embed=view.build_embed(), view=view)
+
+
 
 @bot.command(name="ping")
 async def ping(ctx):
