@@ -1,3 +1,4 @@
+FOUND
 import discord
 from discord.ext import commands
 import aiohttp
@@ -14,6 +15,8 @@ BOORU_API_BASE = "https://api.rule34.xxx/index.php"
 BOORU_USER_ID = os.environ.get("BOORU_USER_ID", "")
 BOORU_API_KEY = os.environ.get("BOORU_API_KEY", "")
 FAVOURITES_FILE = "favourites.json"
+MEME_SUBREDDITS = [s.strip() for s in os.environ.get("MEME_SUBREDDITS", "memes,dankmemes,me_irl,shitposting,196").split(",") if s.strip()]
+BLACKLIST_FILE = "blacklist.json"
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
@@ -80,34 +83,95 @@ def apply_sort(posts: list, sort: str) -> list:
         random.shuffle(posts)
         return posts
 
-def parse_tags(args: tuple) -> str:
+def parse_tags(args: tuple, guild_id: int | None = None) -> str:
     """
     Join args into a tag string and append -ai.
     Supports exclusions via -tag syntax (passed through as-is).
     e.g. ("cat", "green_shirt", "-blue_shirt") -> "cat green_shirt -blue_shirt -ai"
     """
     tag_str = " ".join(args).strip()
-    return (tag_str + " -ai").strip() if tag_str else "-ai"
+    query = (tag_str + " -ai").strip() if tag_str else "-ai"
+    if guild_id:
+        for tag in get_guild_blacklist(guild_id):
+            exclusion = f"-{tag}"
+            if exclusion not in query:
+                query += f" {exclusion}"
+    return query.strip()
+
+# -- Blacklist storage --------------------------------------------------------
+
+def load_blacklist() -> dict:
+    if not os.path.exists(BLACKLIST_FILE):
+        return {}
+    with open(BLACKLIST_FILE, "r") as f:
+        return json.load(f)
+
+def save_blacklist(data: dict):
+    with open(BLACKLIST_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def get_guild_blacklist(guild_id: int) -> list:
+    return load_blacklist().get(str(guild_id), [])
+
+def add_to_blacklist(guild_id: int, tag: str) -> bool:
+    data = load_blacklist()
+    key = str(guild_id)
+    if key not in data:
+        data[key] = []
+    tag = tag.lower().strip()
+    if tag in data[key]:
+        return False
+    data[key].append(tag)
+    save_blacklist(data)
+    return True
+
+def remove_from_blacklist(guild_id: int, tag: str) -> bool:
+    data = load_blacklist()
+    key = str(guild_id)
+    if key not in data or tag not in data[key]:
+        return False
+    data[key].remove(tag)
+    save_blacklist(data)
+    return True
+
+# -- Command aliases reference ------------------------------------------------
+
+COMMAND_ALIASES = {
+    "random":    [".rand", ".r"],
+    "top":       [".best", ".highest"],
+    "bottom":    [".worst", ".lowest", ".flop"],
+    "date":      [".new", ".newest", ".recent"],
+    "favs":      [".favourites", ".favorites", ".faves"],
+    "blacklist": [],
+    "alias":     [],
+    "help":      [],
+    "meme":      [],
+    "ping":      [],
+}
+
 
 # ── Booru fetcher ─────────────────────────────────────────────────────────────
 
 async def fetch_booru_posts(tag_query: str) -> list | None:
-    """Returns a list of posts, or None on API error."""
-    params = {
+    """Returns a list of posts, or None on API error.
+    Always fetches page 0 first. If a full page of 100 comes back,
+    tries a random higher page for variety -- but falls back to page 0
+    results if the random page is empty, so narrow tags never silently fail.
+    """
+    base_params = {
         "page": "dapi",
         "s": "post",
         "q": "index",
         "json": "1",
         "limit": "100",
-        "pid": random.randint(0, 10),
         "tags": tag_query,
     }
     if BOORU_USER_ID and BOORU_API_KEY:
-        params["user_id"] = BOORU_USER_ID
-        params["api_key"] = BOORU_API_KEY
+        base_params["user_id"] = BOORU_USER_ID
+        base_params["api_key"] = BOORU_API_KEY
 
     async with aiohttp.ClientSession() as session:
-        async with session.get(BOORU_API_BASE, params=params) as resp:
+        async with session.get(BOORU_API_BASE, params={**base_params, "pid": 0}) as resp:
             if resp.status != 200:
                 return None
             data = await resp.json(content_type=None)
@@ -115,7 +179,17 @@ async def fetch_booru_posts(tag_query: str) -> list | None:
                 return None
             if not data:
                 return []
-            return [p for p in data if p.get("file_url") or p.get("sample_url")]
+
+        # Only roll a random page if page 0 was full (more pages likely exist)
+        if len(data) == 100:
+            pid = random.randint(1, 10)
+            async with session.get(BOORU_API_BASE, params={**base_params, "pid": pid}) as resp2:
+                if resp2.status == 200:
+                    page_data = await resp2.json(content_type=None)
+                    if page_data and not isinstance(page_data, dict):
+                        data = page_data  # use random page; fall back to page 0 if empty
+
+        return [p for p in data if p.get("file_url") or p.get("sample_url")]
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
@@ -245,7 +319,7 @@ class BooruView(discord.ui.View):
 # ── Shared booru command logic ─────────────────────────────────────────────────
 
 async def booru_cmd(ctx: commands.Context, sort: str, args: tuple):
-    tag_query = parse_tags(args)
+    tag_query = parse_tags(args, guild_id=ctx.guild.id if ctx.guild else None)
     async with ctx.typing():
         try:
             posts = await fetch_booru_posts(tag_query)
@@ -313,18 +387,82 @@ async def cmd_help(ctx: commands.Context):
     embed.add_field(name=f"{p}bottom [tags]", value="Browse posts, lowest score first", inline=False)
     embed.add_field(name=f"{p}date [tags]", value="Browse posts, newest first", inline=False)
     embed.add_field(name=f"{p}favs", value="Browse this server's favourited posts", inline=False)
+    embed.add_field(name=f"{p}blacklist", value="View or manage this server's tag blacklist", inline=False)
+    embed.add_field(name=f"{p}alias", value="Show all command aliases", inline=False)
     embed.add_field(name=f"{p}meme", value="Random meme from Reddit", inline=False)
     embed.add_field(name=f"{p}ping", value="Check bot latency", inline=False)
     embed.set_footer(text=f"Tags example: {p}random cat green_shirt -blue_shirt")
     await ctx.send(embed=embed)
 
-# ── .meme ─────────────────────────────────────────────────────────────────────
+# -- .blacklist ---------------------------------------------------------------
+
+@bot.command(name="blacklist")
+async def cmd_blacklist(ctx: commands.Context, action: str = "", *, tag: str = ""):
+    """View or manage the server tag blacklist.
+    Usage:
+      .blacklist             -- view current blacklist
+      .blacklist add <tag>   -- add a tag
+      .blacklist remove <tag> -- remove a tag
+    """
+    if not ctx.guild:
+        await ctx.send("This command only works in a server!")
+        return
+
+    p = PREFIX
+
+    if not action:
+        tags = get_guild_blacklist(ctx.guild.id)
+        embed = discord.Embed(title="Server Tag Blacklist", color=0x2B2D31)
+        if tags:
+            embed.description = "\n".join(f"`{t}`" for t in sorted(tags))
+        else:
+            embed.description = f"No tags blacklisted yet. Use `{p}blacklist add <tag>` to add one."
+        await ctx.send(embed=embed)
+        return
+
+    if action == "add":
+        if not tag:
+            await ctx.send(f"Usage: `{p}blacklist add <tag>`")
+            return
+        added = add_to_blacklist(ctx.guild.id, tag)
+        if added:
+            await ctx.send(f"Added `{tag}` to the blacklist. (nou o u)nou")
+        else:
+            await ctx.send(f"`{tag}` is already blacklisted.")
+        return
+
+    if action == "remove":
+        if not tag:
+            await ctx.send(f"Usage: `{p}blacklist remove <tag>`")
+            return
+        removed = remove_from_blacklist(ctx.guild.id, tag)
+        if removed:
+            await ctx.send(f"Removed `{tag}` from the blacklist.")
+        else:
+            await ctx.send(f"`{tag}` wasn't in the blacklist.")
+        return
+
+    await ctx.send(f"Unknown action `{action}`. Use `add` or `remove`.")
+
+# -- .alias -------------------------------------------------------------------
+
+@bot.command(name="alias")
+async def cmd_alias(ctx: commands.Context):
+    """Show all command aliases."""
+    p = PREFIX
+    embed = discord.Embed(title="Command Aliases", color=0x2B2D31)
+    for cmd, aliases in COMMAND_ALIASES.items():
+        if aliases:
+            value = "  ".join(f"`{p}{a.lstrip('.')}`" for a in aliases)
+        else:
+            value = "no aliases"
+        embed.add_field(name=f"`{p}{cmd}`", value=value, inline=False)
+    await ctx.send(embed=embed)
 
 @bot.command(name="meme")
 async def cmd_meme(ctx: commands.Context):
     """Random meme from Reddit."""
-    subreddits = ["memes", "dankmemes", "me_irl", "shitposting", "196"]
-    sub = random.choice(subreddits)
+    sub = random.choice(MEME_SUBREDDITS)
     url = f"https://www.reddit.com/r/{sub}/random/.json"
 
     async with ctx.typing():
@@ -367,3 +505,4 @@ if __name__ == "__main__":
     if not token:
         raise ValueError("DISCORD_TOKEN environment variable not set!")
     bot.run(token)
+
