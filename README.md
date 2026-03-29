@@ -11,6 +11,8 @@ Prefix is `.` by default, but can be changed via the `BOT_PREFIX` environment va
 | `.bottom [tags]` | `.worst`, `.lowest`, `.flop` | Browse posts, lowest score first |
 | `.date [tags]` | `.new`, `.newest`, `.recent` | Browse posts, newest first |
 | `.favs` | `.favourites`, `.favorites`, `.faves` | Browse this server's favourited posts |
+| `.blacklist` | | View or manage this server's tag blacklist |
+| `.alias` | | Show all command aliases |
 | `.meme` | | Random meme from Reddit |
 | `.ping` | | Check bot latency |
 | `.help` | | List all commands |
@@ -22,6 +24,16 @@ Tags can be passed directly after any booru command. Prefix a tag with `-` to ex
 ```
 .random cat green_shirt -blue_shirt
 .top solo -rating:explicit
+```
+
+### Blacklist
+
+Blacklisted tags are automatically appended as exclusions to every booru search. Stored per-server.
+
+```
+.blacklist                  -- view current blacklist
+.blacklist add <tag>        -- add a tag
+.blacklist remove <tag>     -- remove a tag
 ```
 
 ---
@@ -62,6 +74,7 @@ Tags can be passed directly after any booru command. Prefix a tag with `-` to ex
 |---|---|
 | `DISCORD_TOKEN` | Your bot token from Step 1 |
 | `BOT_PREFIX` | Command prefix (default: `.`) |
+| `MEME_SUBREDDITS` | Comma-separated subreddits for `.meme` (default: `memes,dankmemes,me_irl,shitposting,196`) |
 | `BOORU_USER_ID` | (Optional) rule34 user ID for API auth |
 | `BOORU_API_KEY` | (Optional) rule34 API key for API auth |
 
