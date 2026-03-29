@@ -1,16 +1,28 @@
-# Discord Fun Bot -- Setup Guide
+# Discord Booru Bot -- Setup Guide
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `/meme` | Random meme from Reddit (memes, dankmemes, me_irl, etc.) |
-| `/8ball <question>` | Ask the magic 8-ball |
-| `/fortune` | Get your fortune for the day |
-| `/trivia` | Start a 30-second trivia question in chat |
-| `/coinflip` | Flip a coin |
-| `/roll [sides]` | Roll a dice (d4/d6/d8/d10/d12/d20/d100) |
-| `/ping` | Check bot latency |
+Prefix is `.` by default, but can be changed via the `BOT_PREFIX` environment variable.
+
+| Command | Aliases | Description |
+|---|---|---|
+| `.random [tags]` | `.rand`, `.r` | Browse posts in random order |
+| `.top [tags]` | `.best`, `.highest` | Browse posts, highest score first |
+| `.bottom [tags]` | `.worst`, `.lowest`, `.flop` | Browse posts, lowest score first |
+| `.date [tags]` | `.new`, `.newest`, `.recent` | Browse posts, newest first |
+| `.favs` | `.favourites`, `.favorites`, `.faves` | Browse this server's favourited posts |
+| `.meme` | | Random meme from Reddit |
+| `.ping` | | Check bot latency |
+| `.help` | | List all commands |
+
+### Tag filtering
+
+Tags can be passed directly after any booru command. Prefix a tag with `-` to exclude it.
+
+```
+.random cat green_shirt -blue_shirt
+.top solo -rating:explicit
+```
 
 ---
 
@@ -28,7 +40,7 @@
 ## Step 2 -- Invite the Bot to Your Server
 
 1. Go to the **OAuth2 > URL Generator** tab
-2. Under **Scopes**, check: `bot` and `applications.commands`
+2. Under **Scopes**, check: `bot`
 3. Under **Bot Permissions**, check: `Send Messages`, `Embed Links`, `Read Message History`
 4. Copy the generated URL at the bottom and open it in your browser
 5. Select your server and authorize
@@ -37,16 +49,22 @@
 
 1. Make a GitHub account if you don't have one: https://github.com
 2. Create a new repository (can be private) and upload all the bot files:
-   - bot.py
-   - requirements.txt
-   - railway.toml
+   - `bot.py`
+   - `requirements.txt`
+   - `railway.toml`
 3. Go to https://railway.app and sign up with your GitHub account
 4. Click **New Project > Deploy from GitHub repo**
 5. Select your repository
 6. Once it starts deploying, click on the service, then go to **Variables**
-7. Add a new variable:
-   - Name: `DISCORD_TOKEN`
-   - Value: (paste your bot token from Step 1)
+7. Add the following variables:
+
+| Name | Value |
+|---|---|
+| `DISCORD_TOKEN` | Your bot token from Step 1 |
+| `BOT_PREFIX` | Command prefix (default: `.`) |
+| `BOORU_USER_ID` | (Optional) rule34 user ID for API auth |
+| `BOORU_API_KEY` | (Optional) rule34 API key for API auth |
+
 8. Click **Deploy** -- done!
 
 Railway gives you $5 free credits per month. A bot like this uses roughly $0.50-1/month, so you're well within free limits.
@@ -57,17 +75,14 @@ If you want to test locally before deploying:
 
 ```bash
 pip install -r requirements.txt
-set DISCORD_TOKEN=your_token_here   # Windows
-export DISCORD_TOKEN=your_token_here  # Mac/Linux
+
+# Windows
+set DISCORD_TOKEN=your_token_here
+set BOT_PREFIX=.
+
+# Mac/Linux
+export DISCORD_TOKEN=your_token_here
+export BOT_PREFIX=.
+
 python bot.py
 ```
-
-## Adding More Trivia Questions
-
-Open `bot.py` and find the `TRIVIA` list near the top. Add more questions in this format:
-
-```python
-{"q": "Your question here?", "a": "answer"},
-```
-
-The answer check is case-insensitive, so don't worry about capitalisation.
